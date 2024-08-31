@@ -1,23 +1,28 @@
 import gymnasium as gym
-from gymnasium.spaces import Box
+from gymnasium.spaces import Box, Discrete
 import numpy as np
 import math
 import random
 import vector 
 import pygame
 import copy
+from PIL import Image, ImageDraw
+
 
 #Caucasus terrain map
 # minX -1000, minZ -1000, maxX 1000, maxZ 1000
-# X, Z, Vz, Vz, course, state(0-stand, 1-crouch, 2-pron)
-observation_space = Box(low=np.array([-300.,-300.,-3.6,-3.6,-math.pi, 0], dtype=np.float32), high=np.array([300.,300.,3.6,3.6,math.pi, 2], dtype=np.float32), shape=(6,), dtype=np.float32)
+# X, Z, Vz, Vz, course
+observation_space = Box(low=np.array([-300.,-300.,-3.6,-3.6,-math.pi], dtype=np.float32), high=np.array([300.,300.,3.6,3.6,math.pi], dtype=np.float32), shape=(5,), dtype=np.float32)
 
-#                 b_move_to_view, course move(-pi,pi), course view(-pi,pi), speed(0,3.6), state(0-stand, 1-crouch, 2-pron), action(0-idle, 1-climb)
-action_space = Box(low=np.array([0.,-1.,-1., 0., 0., 0.], dtype=np.float32), high=np.array([1., 1, 1, 1, 2, 1], dtype=np.float32), shape=(6,), dtype=np.float32)
+#                 course move(-pi,pi), speed(0,3.6)
+action_space = Box(low=np.array([-1, 0], dtype=np.float32), high=np.array([1, 1], dtype=np.float32), shape=(2,), dtype=np.float32)
+
+action_space_d = Discrete(10, seed=42)
 
 class HumanMoveSimpleAction(gym.Env):
     """непрерывные состояния, непрерывные действия"""
 
+    continuous = True
     reward = 0.
     tick = 0
 
@@ -28,9 +33,12 @@ class HumanMoveSimpleAction(gym.Env):
     time_step = 0.02
     time_tick = 1.
     speed_acc = 2. #m2/s
-    angle_speed = 4. #rad/s
-    min_speed = 0.44
-    max_speed = 3.6
+    angle_speed = 2. #rad/s
+    min_speed = 0.44 #m/s
+    max_speed = 3.6 #m/s
+    desc_step_speed = 0.5 #m/s
+    desc_step_angle_speed = 0.1 #rad/s
+    finish_radius = 3 #m
 
     #variable
     time_model = 0.
@@ -39,12 +47,13 @@ class HumanMoveSimpleAction(gym.Env):
     position = vector.obj(x=0.,y=0.)
     v_speed = vector.obj(x=0.,y=0.)
     speed = 0.
-    dir_view = vector.obj(x=1.,y=0.)
     dir_move = vector.obj(x=1.,y=0.)
     course = 0.
+    desc_angle_speed = 0
 
     target_point = vector.obj(x=100.,y=100.)
 
+    if_render = False
     is_pygame = False
     screen = {}
     zero = vector.obj(x=300, y=300)
@@ -52,19 +61,31 @@ class HumanMoveSimpleAction(gym.Env):
     def name(self):
         return "HumanMoveSimple"
 
-    def __init__(self, seed=42, render_mode: str=None):
+    def __init__(self, continuous: bool = True, seed=42, render_mode: str=None):
+        self.render_mode = render_mode
+        self.reward_range = (-float(600), float(600))
+        self.continuous = continuous
         self.observation_space = observation_space
-        self.action_space = action_space
+        if continuous == True:
+            self.action_space = action_space
+        else:
+            self.action_space = action_space_d
+            self.action_space.seed(seed=seed)
 
         super().reset(seed=seed)
         random.seed(seed)
         self.observation_space.seed(seed)
 
         if render_mode == 'human':
+            self.is_render = False
             self.is_pygame = True
             pygame.init()
             self.screen = pygame.display.set_mode((self.zero.x * 2, self.zero.y * 2))
             pygame.display.set_caption("Moving")
+        elif render_mode == 'rgb_array':
+            self.is_pygame = False
+            self.is_render = True
+
 
     def close(self):
         if self.is_pygame == True:
@@ -74,18 +95,34 @@ class HumanMoveSimpleAction(gym.Env):
 
     def _get_info(self):
         return {"tick progress: ": self.tick}
+    
+    def _get_length(self):
+        return int(self.time_model_max)
 
     def step(self, action, is_teacher: bool = False):
 
         teach_observation = self.teach_move() if is_teacher == True else None
 
-        b_move_to_view  = action[0] > 0.5
-        set_angle_dir   = action[1] * math.pi
-        set_angle_view  = action[2] * math.pi
-        set_speed       = action[3] * 3.6
-        set_state       = int(action[4])
-        set_action      = int(action[5])
-       
+        set_angle_dir   = self.dir_move.phi         # action - 1(-) - 2(+)
+        set_speed       = self.speed                # action - 3(-) - 4(+)
+
+        if self.continuous == True:
+            set_angle_dir   = action[0] * math.pi
+            set_speed       = action[1] * 3.6
+        else:
+
+            curr_angle_speed = 0
+            if action == 1:
+                curr_angle_speed = -self.desc_step_angle_speed
+            elif action == 2:
+                curr_angle_speed = self.desc_step_angle_speed
+            elif action == 3:
+                set_speed = self.speed - self.desc_step_speed
+            elif action == 4:
+                set_speed = self.speed + self.desc_step_speed
+
+            curr_angle_speed = self._clamp(curr_angle_speed, -self.angle_speed, self.angle_speed)
+            set_angle_dir += curr_angle_speed
 
         self.simple_move(set_angle_dir, set_speed)
         step_reward, terminated, truncated = self.calc_step_reward(set_speed)
@@ -93,7 +130,7 @@ class HumanMoveSimpleAction(gym.Env):
         # вознаграждение за правильное решение
         self.reward += step_reward
 
-        observation = np.array([self.position.x, self.position.y, self.v_speed.x, self.v_speed.y, self.course, 0])
+        observation = np.array([self.position.x, self.position.y, self.v_speed.x, self.v_speed.y, self.course])
 
         info = self._get_info()
         self.tick += 1
@@ -114,16 +151,13 @@ class HumanMoveSimpleAction(gym.Env):
             self.observation_space.seed(seed)
 
         start_observation = self.observation_space.sample()
-        start_observation[5] = 0.
-
 
         self.time_model = 0.
         self.position = vector.obj(x=start_observation[0],y=start_observation[1])
         self.v_speed = vector.obj(x=start_observation[2],y=start_observation[3])
         self.speed = self.v_speed.rho
-        self.dir_view = vector.obj(x=1.,y=0.)
-        self.dir_move = vector.obj(x=1.,y=0.)
-        self.course = 0.
+        self.dir_move = vector.obj(x=self.v_speed.x/self.v_speed.rho,y=self.v_speed.y/self.v_speed.rho)
+        self.course = self.dir_move.phi
 
         self.target_point.x = 0.
         self.target_point.y = 0.
@@ -166,10 +200,9 @@ class HumanMoveSimpleAction(gym.Env):
             if cos_rotate_angle < cos_angle_step:
                 self_right = vector.obj(x=-self.dir_move.y, y=self.dir_move.x)
                 cos_side_rotate = set_dir @ self_right
-                if cos_side_rotate < 0:
-                    angle_step *= -1
+                angle_sign = -1 if cos_side_rotate < 0 else 1
                 # доворачивает текщий вектор движения в сторону заданного на угол за шаг
-                self.dir_move = self.dir_move.rotateZ(angle_step)
+                self.dir_move = self.dir_move.rotateZ(angle_sign * angle_step)
             else:
                 self.dir_move = set_dir
 
@@ -179,7 +212,7 @@ class HumanMoveSimpleAction(gym.Env):
                 speed_sign = -1.
             # меняем скорость
             new_speed += speed_sign * self.speed_acc * self.time_step
-            new_speed = self._clamp(new_speed, -self.max_speed, self.max_speed)
+            new_speed = self._clamp(new_speed, 0, self.max_speed)
 
             # движеие вне мертвой области 
             if -self.min_speed > new_speed or new_speed > self.min_speed:
@@ -256,19 +289,41 @@ class HumanMoveSimpleAction(gym.Env):
         teach_v_speed.x = teach_dir_move.x * teach_speed
         teach_v_speed.y = teach_dir_move.y * teach_speed
 
-        return np.array([teach_position.x, teach_position.y, teach_v_speed.x, teach_v_speed.y, teach_dir_move.phi, 0])
+        return np.array([teach_position.x, teach_position.y, teach_v_speed.x, teach_v_speed.y, teach_dir_move.phi])
 
     def teach_action(self, state):
-        
-        position = vector.obj(x=state[0], y = state[1])
-       
-        teach_set_dir = -position
-        teach_set_speed = 1
-        if teach_set_dir.rho < 2:
-            teach_set_speed /= 7
-        course = teach_set_dir.phi / math.pi 
 
-        t_action = np.array([1., course, course, teach_set_speed, 0, 0])
+        t_action = {}
+            
+        position = vector.obj(x=state[0], y = state[1])
+        teach_set_dir = -position
+
+        if self.continuous == True:
+            teach_set_speed = 1
+            if teach_set_dir.rho < 2:
+                teach_set_speed /= 7
+            course = teach_set_dir.phi / math.pi 
+            t_action = np.array([course, teach_set_speed])
+        else:
+            delta_angle = teach_set_dir.phi - self.course
+            sign = -1 if delta_angle >= 0 else 1
+            if abs(delta_angle) > math.pi:
+                delta_angle = sign * (2 * math.pi - abs(delta_angle))
+
+            if abs(delta_angle) > 5 * math.pi / 180 :
+                if self.speed > 1:
+                    t_action = 3
+                else:
+                    t_action = 2 if delta_angle >= 0 else 1
+            else:
+                if teach_set_dir.rho < 1:
+                    t_action = 3 if self.speed > 0 else 4
+                elif teach_set_dir.rho < 4:
+                    t_action = 3 if self.speed >= 0.5 else 4
+                else:
+                    t_action = 4
+
+
         return t_action
     
 
@@ -291,7 +346,7 @@ class HumanMoveSimpleAction(gym.Env):
         # расстояние до целевой точки
         dist_to_finish = vec_to_finish.rho
     
-        if dist_to_finish < 1: # пришли
+        if dist_to_finish < self.finish_radius: # пришли
             return 100, False, True
 
         # единичный вектор на целевую точку        
@@ -338,7 +393,48 @@ class HumanMoveSimpleAction(gym.Env):
             step_reward = -10
 
         return step_reward, False, False
+
+    def render(self):    
+        if self.is_render == False:
+            return None
+
+        black = (0, 0, 0)
+        white = (255, 255, 255)
+        red = (255, 0, 0)
+        green = (0, 255, 0)
+        blue = (0, 0, 255)
+        
+        im = Image.new('RGB', (self.zero.x * 2, self.zero.y * 2), black)
+        draw = ImageDraw.Draw(im)
+        
+        target_circle = self.zero + self.target_point
+        draw.ellipse((target_circle.x-5, target_circle.y-5,target_circle.x+5, target_circle.y+5), fill=blue, outline=blue)
     
+        for point in self.tick_point:
+            r_point = self.zero + point
+            draw.point((r_point.x, r_point.y), fill=green)
+
+        # рисуем треугольник
+        triangle = self.zero + self.position
+        triangle_width = 10
+        triangle_height = 10
+        corner2 = vector.obj(x = -triangle_height, y = triangle_width/2)
+        corner3 = vector.obj(x = -triangle_height, y = -triangle_width/2)
+        corner2 = corner2.rotateZ(self.course)
+        corner3 = corner3.rotateZ(self.course)
+        corner2 += triangle
+        corner3 += triangle
+
+        draw.polygon(
+            xy=(
+                (triangle.x, triangle.y),
+                (corner2.x, corner2.y),
+                (corner3.x, corner3.y)
+            ), fill=red, outline=red
+        )
+
+        im_np = np.asarray(im)
+        return im_np
 
     def human_render(self):
     
