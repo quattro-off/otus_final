@@ -3,10 +3,12 @@ from typing import Any, Dict, Tuple, Union
 
 import mlflow
 import numpy as np
+import gymnasium
 
 from stable_baselines3.common.logger import KVWriter, Logger
 from stable_baselines3.common.callbacks import BaseCallback
-
+from stable_baselines3.common.evaluation import evaluate_policy
+from moviepy.editor import ImageSequenceClip
 
 class MLflowCheckpointCallback(BaseCallback):
     """
@@ -32,6 +34,7 @@ class MLflowCheckpointCallback(BaseCallback):
 
     def __init__(
         self,
+        eval_env: gymnasium.Env,
         save_freq: int,
         save_path: str,
         save_replay_buffer: bool = False,
@@ -39,10 +42,12 @@ class MLflowCheckpointCallback(BaseCallback):
         verbose: int = 0,
     ):
         super().__init__(verbose)
+        self.eval_env = eval_env
         self.save_freq = save_freq
         self.save_path = save_path
         self.save_replay_buffer = save_replay_buffer
         self.save_vecnormalize = save_vecnormalize
+        #self._deterministic = deterministic
 
     def _checkpoint_path(self, checkpoint_type: str = "") -> str:
         return f'{checkpoint_type}{self.save_path}/{self.n_calls}'
@@ -102,6 +107,30 @@ class MLflowOutputFormat(KVWriter):
                     mlflow.log_metric(key, value, step)
 
 
+def VideoRecord(model, eval_env: gymnasium.Env, path: str, file_name: str):
+    
+    #Video
+    screens = []
+    def grab_screens(_locals: Dict[str, Any], _globals: Dict[str, Any]) -> None:
+        screen = eval_env.render()
+        screens.append(screen)
+
+    evaluate_policy(
+        model,
+        eval_env,
+        callback=grab_screens,
+        n_eval_episodes=1,
+        deterministic=True,
+    )
+    
+    if len(screens) > 1:
+        video_path = path + '/' + file_name
+        clip = ImageSequenceClip(screens, fps=30)
+        clip.write_videofile(video_path)
+        return True
+
+    return False
+
 
 class MLflowServerHelper():
 
@@ -116,7 +145,7 @@ class MLflowServerHelper():
     def load_artifact(self, artifact_uri: str, local_path: str):
         mlflow.artifacts.download_artifacts(artifact_uri=artifact_uri, dst_path=local_path)
 
-    def learn_and_fix(self, model, run_name: str, episode_count: int, parameters: Dict, experiment_id: int, experiment_name: str = "", checkpoint_interval: int = 0, log_interval: int = 10):
+    def learn_and_fix(self, model, env, run_name: str, episode_count: int, parameters: Dict, experiment_id: int, experiment_name: str = "", checkpoint_interval: int = 0, log_interval: int = 10):
 
         experiment = {}
         if experiment_name == "":
@@ -127,6 +156,7 @@ class MLflowServerHelper():
         save_callback = None
         if checkpoint_interval > 0 :
             save_callback = MLflowCheckpointCallback(
+                eval_env=env,
                 save_freq=checkpoint_interval,
                 save_path=experiment.name,
                 verbose=0,
@@ -151,9 +181,13 @@ class MLflowServerHelper():
             
             model.save(experiment.name + '/model.zip')
             
-            mlflow.pytorch.log_model(model.actor, experiment.name + '/actor')
+            #mlflow.pytorch.log_model(model.actor, experiment.name + '/actor')
 
             mlflow.log_artifact(experiment.name + '/model.zip', experiment.name + '/sb3')
+
+            #Video
+            if VideoRecord(model, env, experiment.name, '/agent.mp4') == True:
+                mlflow.log_artifact(experiment.name  + '/agent.mp4', experiment.name  + '/video')
 
 
             shutil.rmtree(os.path.join(experiment.name))

@@ -17,12 +17,13 @@ observation_space = Box(low=np.array([-300.,-300.,-3.6,-3.6,-math.pi], dtype=np.
 #                 course move(-pi,pi), speed(0,3.6)
 action_space = Box(low=np.array([-1, 0], dtype=np.float32), high=np.array([1, 1], dtype=np.float32), shape=(2,), dtype=np.float32)
 
-action_space_d = Discrete(10, seed=42)
+action_space_d = Discrete(5, seed=42)
 
 class HumanMoveSimpleAction(gym.Env):
     """непрерывные состояния, непрерывные действия"""
 
     continuous = True
+    observation_render = False
     reward = 0.
     tick = 0
 
@@ -61,10 +62,11 @@ class HumanMoveSimpleAction(gym.Env):
     def name(self):
         return "HumanMoveSimple"
 
-    def __init__(self, continuous: bool = True, seed=42, render_mode: str=None):
+    def __init__(self, continuous: bool = True, seed: int=42, render_mode: str=None, observation_render: bool = False):
         self.render_mode = render_mode
         self.reward_range = (-float(600), float(600))
         self.continuous = continuous
+        self.observation_render = observation_render
         self.observation_space = observation_space
         if continuous == True:
             self.action_space = action_space
@@ -85,6 +87,39 @@ class HumanMoveSimpleAction(gym.Env):
         elif render_mode == 'rgb_array':
             self.is_pygame = False
             self.is_render = True
+
+    def reset(self, seed: int = None, options=None):
+
+        if seed != None:
+            random.seed(seed)
+            self.observation_space.seed(seed)
+
+        start_observation = self.observation_space.sample()
+
+        self.time_model = 0.
+        self.position = vector.obj(x=start_observation[0],y=start_observation[1])
+        self.v_speed = vector.obj(x=start_observation[2],y=start_observation[3])
+        self.speed = self.v_speed.rho
+        self.dir_move = vector.obj(x=self.v_speed.x/self.v_speed.rho,y=self.v_speed.y/self.v_speed.rho)
+        self.course = self.dir_move.phi
+
+        self.target_point.x = 0.
+        self.target_point.y = 0.
+
+        dist = self.position.rho
+        self.time_model_max = 5 * dist / self.max_speed
+
+        self.tick = 0
+        self.reward = 0.
+        self.tick_point.clear()
+        
+        info = self._get_info()
+
+        if self.observation_render == True:
+            rend = self._get_render()
+            return rend, info
+        else:
+            return start_observation, info
 
 
     def close(self):
@@ -138,41 +173,13 @@ class HumanMoveSimpleAction(gym.Env):
         if self.is_pygame == True:
             self.human_render()
 
-        if is_teacher == False:
-            return observation, step_reward, terminated, truncated, info
+        if self.observation_render == True:
+            return self._get_render()
         else:
-            return observation, step_reward, terminated, truncated, info, teach_observation
-
-
-    def reset(self, seed=None, options=None):
-
-        if seed!=None:
-            random.seed(seed)
-            self.observation_space.seed(seed)
-
-        start_observation = self.observation_space.sample()
-
-        self.time_model = 0.
-        self.position = vector.obj(x=start_observation[0],y=start_observation[1])
-        self.v_speed = vector.obj(x=start_observation[2],y=start_observation[3])
-        self.speed = self.v_speed.rho
-        self.dir_move = vector.obj(x=self.v_speed.x/self.v_speed.rho,y=self.v_speed.y/self.v_speed.rho)
-        self.course = self.dir_move.phi
-
-        self.target_point.x = 0.
-        self.target_point.y = 0.
-
-        dist = self.position.rho
-        self.time_model_max = 5 * dist / self.max_speed
-
-        self.tick = 0
-        self.reward = 0.
-        self.tick_point.clear()
-        
-        info = self._get_info()
-        return start_observation, info
-
-       
+            if is_teacher == False:
+                return observation, step_reward, terminated, truncated, info
+            else:
+                return observation, step_reward, terminated, truncated, info, teach_observation
 
     def simple_move(self, set_angle_dir: float, set_speed: float):
 
@@ -394,10 +401,7 @@ class HumanMoveSimpleAction(gym.Env):
 
         return step_reward, False, False
 
-    def render(self):    
-        if self.is_render == False:
-            return None
-
+    def _get_render(self):
         black = (0, 0, 0)
         white = (255, 255, 255)
         red = (255, 0, 0)
@@ -407,6 +411,8 @@ class HumanMoveSimpleAction(gym.Env):
         im = Image.new('RGB', (self.zero.x * 2, self.zero.y * 2), black)
         draw = ImageDraw.Draw(im)
         
+        draw.rectangle((1, 1, self.zero.x * 2 - 1, self.zero.y * 2 - 1), outline=red, width=4)
+
         target_circle = self.zero + self.target_point
         draw.ellipse((target_circle.x-5, target_circle.y-5,target_circle.x+5, target_circle.y+5), fill=blue, outline=blue)
     
@@ -435,6 +441,12 @@ class HumanMoveSimpleAction(gym.Env):
 
         im_np = np.asarray(im)
         return im_np
+    
+    def render(self):
+        #if self.is_render == False:
+        #    if render_mode == None or render_mode != 'rgb_array':
+        #        return None
+        return self._get_render()
 
     def human_render(self):
     
