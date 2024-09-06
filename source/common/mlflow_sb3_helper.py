@@ -58,7 +58,12 @@ class MLflowCheckpointCallback(BaseCallback):
             save_path = self._checkpoint_path()
             model_path = save_path + '/model.zip'
             self.model.save(model_path)
-            mlflow.log_artifact(model_path, save_path + '/sb3')
+
+            try:
+                mlflow.log_artifact(model_path, save_path + '/sb3')
+            except mlflow.MlflowException as e:
+                print(f'MLflow log_artifact MODEL, Check Point call: {self.n_calls} with message:  {e.message}')
+
 
             if self.verbose >= 2:
                 print(f"Saving model checkpoint to {save_path}")
@@ -68,7 +73,10 @@ class MLflowCheckpointCallback(BaseCallback):
 
                 replay_buffer_path = save_path + "/replay_buffer.pkl"
                 self.model.save_replay_buffer(replay_buffer_path)  # type: ignore[attr-defined]
-                mlflow.log_artifact(replay_buffer_path, save_path + '/replay_buffer')
+                try:
+                    mlflow.log_artifact(replay_buffer_path, save_path + '/replay_buffer')
+                except mlflow.MlflowException as e:
+                    print(f'MLflow log_artifact REPLAY, Check Point call: {self.n_calls} with message:  {e.message}')
                 if self.verbose > 1:
                     print(f"Saving model replay buffer checkpoint to {replay_buffer_path}")
 
@@ -76,7 +84,10 @@ class MLflowCheckpointCallback(BaseCallback):
                 # Save the VecNormalize statistics
                 vec_normalize_path = save_path + "/vecnormalize.pkl"
                 self.model.get_vec_normalize_env().save(vec_normalize_path)  # type: ignore[union-attr]
-                mlflow.log_artifact(vec_normalize_path, save_path + '/vecnormalize')
+                try:
+                    mlflow.log_artifact(vec_normalize_path, save_path + '/vecnormalize')
+                except mlflow.MlflowException as e:
+                    print(f'MLflow log_artifact VECNORM, Check Point call: {self.n_calls} with message:  {e.message}')
                 if self.verbose >= 2:
                     print(f"Saving model VecNormalize to {vec_normalize_path}")
 
@@ -142,6 +153,10 @@ class MLflowServerHelper():
         experiment = mlflow.set_experiment(experiment_name)
         return experiment.experiment_id
     
+    def get_experiment(self, experiment_id: int):
+        experiment = mlflow.get_experiment(experiment_id)
+        return experiment.name
+    
     def load_artifact(self, artifact_uri: str, local_path: str):
         mlflow.artifacts.download_artifacts(artifact_uri=artifact_uri, dst_path=local_path)
 
@@ -162,7 +177,7 @@ class MLflowServerHelper():
                 verbose=0,
             )
 
-        with mlflow.start_run(run_name=run_name) as run:
+        with mlflow.start_run(experiment_id=experiment.experiment_id, run_name=run_name) as run:
             
             mlflow.log_dict(parameters, experiment.name + '/parameters.json')
             mlflow.log_params(parameters)
@@ -183,13 +198,21 @@ class MLflowServerHelper():
             
             #mlflow.pytorch.log_model(model.actor, experiment.name + '/actor')
 
-            mlflow.log_artifact(experiment.name + '/model.zip', experiment.name + '/sb3')
+            is_delete_files = True
+            try:
+                mlflow.log_artifact(experiment.name + '/model.zip', experiment.name + '/sb3')
+            except mlflow.MlflowException as e:
+                print(f'MLflow log_artifact MODEL with message:  {e.message}')
+                is_delete_files = False
 
             #Video
             if VideoRecord(model, env, experiment.name, '/agent.mp4') == True:
-                mlflow.log_artifact(experiment.name  + '/agent.mp4', experiment.name  + '/video')
+                try:
+                    mlflow.log_artifact(experiment.name  + '/agent.mp4', experiment.name  + '/video')
+                except mlflow.MlflowException as e:
+                    print(f'MLflow log_artifact VIDEO with message:  {e.message}')
 
-
-            shutil.rmtree(os.path.join(experiment.name))
+            #if is_delete_files == True:
+            #    shutil.rmtree(os.path.join(experiment.name))
 
         return experiment.artifact_location, experiment.name, run.info.run_id
