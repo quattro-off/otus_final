@@ -136,7 +136,7 @@ def VideoRecord(model, eval_env: gymnasium.Env, path: str, file_name: str):
     
     if len(screens) > 1:
         video_path = path + '/' + file_name
-        clip = ImageSequenceClip(screens, fps=30)
+        clip = ImageSequenceClip(screens[:-1], fps=30)
         clip.write_videofile(video_path)
         return True
 
@@ -212,7 +212,7 @@ class MLflowServerHelper():
                 except mlflow.MlflowException as e:
                     print(f'MLflow log_artifact VIDEO with message:  {e.message}')
 
-            #if is_delete_files == True:
-            #    shutil.rmtree(os.path.join(experiment.name))
+            if is_delete_files == True:
+                shutil.rmtree(os.path.join(experiment.name))
 
         return experiment.artifact_location, experiment.name, run.info.run_id
