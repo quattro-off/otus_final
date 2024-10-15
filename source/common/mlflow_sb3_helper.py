@@ -10,6 +10,14 @@ from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 from moviepy.editor import ImageSequenceClip
 
+import sys
+import os
+
+
+sys.path.append(os.path.abspath('../env'))
+
+from env_simple_move import HumanMoveSimpleAction
+
 class MLflowCheckpointCallback(BaseCallback):
     """
     Callback for saving a model every ``save_freq`` calls
@@ -39,6 +47,7 @@ class MLflowCheckpointCallback(BaseCallback):
         save_path: str,
         save_replay_buffer: bool = False,
         save_vecnormalize: bool = False,
+        save_log:int = 1,
         verbose: int = 0,
     ):
         super().__init__(verbose)
@@ -47,12 +56,20 @@ class MLflowCheckpointCallback(BaseCallback):
         self.save_path = save_path
         self.save_replay_buffer = save_replay_buffer
         self.save_vecnormalize = save_vecnormalize
+        self.save_log = save_log
         #self._deterministic = deterministic
 
     def _checkpoint_path(self, checkpoint_type: str = "") -> str:
         return f'{checkpoint_type}{self.save_path}/{self.n_calls}'
 
     def _on_step(self) -> bool:
+
+        #if self.n_calls % self.save_freq == 0:
+        #    env_act = HumanMoveSimpleAction(self.model.get_env())
+        #    sum_rewards = env_act.get_sum_rewards()
+        #    for k, reward in sum_rewards.items():
+        #        self.model.logger.record(f"rollout_rew/{k}", reward)
+
         if self.n_calls % self.save_freq == 0:
 
             save_path = self._checkpoint_path()
@@ -118,7 +135,8 @@ class MLflowOutputFormat(KVWriter):
                     mlflow.log_metric(key, value, step)
 
 
-def VideoRecord(model, eval_env: gymnasium.Env, path: str, file_name: str):
+
+def VideoRecord(model, eval_env: gymnasium.Env, path: str, file_name: str, n_episodes: int = 1, fps:int = 30):
     
     #Video
     screens = []
@@ -130,13 +148,13 @@ def VideoRecord(model, eval_env: gymnasium.Env, path: str, file_name: str):
         model,
         eval_env,
         callback=grab_screens,
-        n_eval_episodes=1,
+        n_eval_episodes=n_episodes,
         deterministic=True,
     )
     
     if len(screens) > 1:
         video_path = path + '/' + file_name
-        clip = ImageSequenceClip(screens[:-1], fps=30)
+        clip = ImageSequenceClip(screens[:-1], fps=fps)
         clip.write_videofile(video_path)
         return True
 
@@ -145,8 +163,11 @@ def VideoRecord(model, eval_env: gymnasium.Env, path: str, file_name: str):
 
 class MLflowServerHelper():
 
-    def __init__(self, mlflow_tracking_uri: str):
+    free_temp = True
+
+    def __init__(self, mlflow_tracking_uri: str, free_temp: bool = True):
         self.mlflow_tracking_uri = mlflow_tracking_uri
+        self.free_temp = free_temp
         mlflow.set_tracking_uri(self.mlflow_tracking_uri)
 
     def new_experiment(self, experiment_name: str):
@@ -160,7 +181,14 @@ class MLflowServerHelper():
     def load_artifact(self, artifact_uri: str, local_path: str):
         mlflow.artifacts.download_artifacts(artifact_uri=artifact_uri, dst_path=local_path)
 
-    def learn_and_fix(self, model, env, run_name: str, episode_count: int, parameters: Dict, experiment_id: int, experiment_name: str = "", checkpoint_interval: int = 0, log_interval: int = 10):
+    def learn_and_fix(self, model, env, 
+                      run_name: str, 
+                      episode_count: int, 
+                      parameters: Dict, 
+                      experiment_id: int, 
+                      experiment_name: str = "", 
+                      checkpoint_interval: int = 0, 
+                      log_interval: int = 10):
 
         experiment = {}
         if experiment_name == "":
@@ -174,6 +202,7 @@ class MLflowServerHelper():
                 eval_env=env,
                 save_freq=checkpoint_interval,
                 save_path=experiment.name,
+                save_log=log_interval,
                 verbose=0,
             )
 
@@ -198,7 +227,7 @@ class MLflowServerHelper():
             
             #mlflow.pytorch.log_model(model.actor, experiment.name + '/actor')
 
-            is_delete_files = True
+            is_delete_files = self.free_temp
             try:
                 mlflow.log_artifact(experiment.name + '/model.zip', experiment.name + '/sb3')
             except mlflow.MlflowException as e:
@@ -206,7 +235,7 @@ class MLflowServerHelper():
                 is_delete_files = False
 
             #Video
-            if VideoRecord(model, env, experiment.name, '/agent.mp4') == True:
+            if VideoRecord(model, env, experiment.name, '/agent.mp4', 3, 120) == True:
                 try:
                     mlflow.log_artifact(experiment.name  + '/agent.mp4', experiment.name  + '/video')
                 except mlflow.MlflowException as e:
