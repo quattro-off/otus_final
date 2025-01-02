@@ -9,22 +9,18 @@ from PIL import Image, ImageDraw
 from typing import Any, Dict, Tuple, Union
 
 
-# dXt (-300,300), dXt (-300,300) 
-# Dt t (0, 300)
-# Azt t (-pi, pi)
-
 # TO (0,1)
-# dXt, dYt, Dt, Azt, 
-observation_space = Box(low=np.array([0,0,0,0], dtype=np.float32), high=np.array([1,1,1,1], dtype=np.float32), shape=(4,), dtype=np.float32)
+# Vx_bind, Vy_bind, dAzt, Dist
+observation_space = Box(low=np.array([-1,-1,-1,0], dtype=np.float32), high=np.array([1,1,1,1], dtype=np.float32), shape=(4,), dtype=np.float32)
 
-#                 course speed(-pi/3,pi/3) rad/s, speed forward(-3.6,3.6) m/s speed right(-3.6,3.6) m/s
+#                 speed forward(-3.6,3.6) m/s speed right(-3.6,3.6) m/s, course speed(-pi/3,pi/3) rad/s
 action_space = Box(low=np.array([-1, -1, -1], dtype=np.float32), high=np.array([1, 1, 1], dtype=np.float32), shape=(3,), dtype=np.float32)
 
 action_space_d = Discrete(7, seed=42)
 
 observation_space_rend = Box(0, 255, (600, 600, 1), dtype=np.uint8)
 
-class HumanMoveSimpleAction(gym.Env):
+class MoveFastAction(gym.Env):
 
 
 
@@ -74,9 +70,10 @@ class HumanMoveSimpleAction(gym.Env):
     def __init__(self, 
                  continuous: bool = True, 
                  seed: int=42, 
-                 render_mode: str=None, 
                  observation_render: bool = False,
                  target_point_rand:bool = False,
+                 render_mode: str=None, 
+                 render_time_step: float=1., 
                  options = None  #options={'finish_dist':100,'start_dist':110,'delta_phi':0}
                  ):
 
@@ -112,9 +109,12 @@ class HumanMoveSimpleAction(gym.Env):
         self.dir_view = vector.obj(x=1.,y=0.)
         self.desc_angle_speed = 0
         self.target_point = vector.obj(x=100.,y=100.)
+        self.vec_dist_to_obctacle_bind = vector.obj(x=100.,y=100.)
 
         # visualiser
         self.render_mode = render_mode
+        self.time_step_human_draw = render_time_step
+        self.time_next_human_draw = 0.
         self.if_render = False
         self.is_pygame = False
         self.screen = {}
@@ -139,6 +139,7 @@ class HumanMoveSimpleAction(gym.Env):
         random.seed(seed)
         self.observation_space.seed(seed)
         self.observation_space_local.seed(seed)
+
 
         if render_mode == 'human':
             self.is_render = False
@@ -204,18 +205,19 @@ class HumanMoveSimpleAction(gym.Env):
             start_dalta_phi = math.radians(random.randint(-self.options['delta_phi'], self.options['delta_phi']))
             self.dir_view = vector.obj(phi=dir.phi + start_dalta_phi,rho=1)
 
+        self.vec_dist_to_obctacle_bind = vector.obj(x=100.,y=100.)
 
         vec_dist = self.target_point - self.position
         self.time_model_optimum = vec_dist.rho / self.max_speed
         self.time_model_max = 3 * self.time_model_optimum
 
         vec_dist.rho -= self.finish_radius + 1
-        
+        d_azimut = vec_dist.deltaphi(self.dir_view)
 
-        start_observation[0] = self._output_norm(self.locate_k, vec_dist.x)   # dXt, dYt, Dt, Azt, 
-        start_observation[1] = self._output_norm(self.locate_k, vec_dist.y)
-        start_observation[2] = self._output_norm(self.locate_k, vec_dist.rho, True)
-        start_observation[3] = self._output_norm(self.angle_k, self._get_course_bind(vec_dist.phi))
+        start_observation[0] = self._output_norm(self.speed_k, self.speed_bind.x, True)  
+        start_observation[1] = self._output_norm(self.speed_k, self.speed_bind.y, True)
+        start_observation[2] = self._output_norm(self.angle_k, d_azimut, True)
+        start_observation[3] = self._output_norm(self.locate_k, vec_dist.rho, True)
 
         self.tick = 0
         self.reward = 0.
@@ -226,6 +228,7 @@ class HumanMoveSimpleAction(gym.Env):
         self.tick_point.clear()
         self.tick_action.clear()
 
+        self.time_next_human_draw = 0.
         
         info = self._get_info()
 
@@ -263,8 +266,8 @@ class HumanMoveSimpleAction(gym.Env):
 
         if self.continuous == True:
             set_speed_forward = action[0] * self.speed_k
-            set_angle_speed  = action[1] * self.speed_angle_k
-            set_speed_right = action[2] * self.speed_k
+            set_speed_right = action[1] * self.speed_k
+            set_angle_speed  = action[2] * self.speed_angle_k
         else:
 
             if action == 0:
@@ -326,11 +329,12 @@ class HumanMoveSimpleAction(gym.Env):
 
         vec_dist = self.target_point - self.position
         vec_dist.rho -= self.finish_radius + 1
+        d_azimut = vec_dist.deltaphi(self.dir_view)
         observation = np.empty(self.observation_space_local.shape, dtype=np.float32)
-        observation[0] = self._output_norm(self.locate_k, vec_dist.x)   # dXt, dYt, Dt, Azt, 
-        observation[1] = self._output_norm(self.locate_k, vec_dist.y)
-        observation[2] = self._output_norm(self.locate_k, vec_dist.rho, True)
-        observation[3] = self._output_norm(self.angle_k, self._get_course_bind(vec_dist.phi))
+        observation[0] = self._output_norm(self.speed_k, self.speed_bind.x, True) 
+        observation[1] = self._output_norm(self.speed_k, self.speed_bind.y, True)
+        observation[2] = self._output_norm(self.angle_k, d_azimut, True)
+        observation[3] = self._output_norm(self.locate_k, vec_dist.rho, True)
         
         for obs in observation: 
             if math.isnan(obs) or math.isinf(obs):
@@ -340,7 +344,9 @@ class HumanMoveSimpleAction(gym.Env):
         self.tick += 1
 
         if self.is_pygame == True:
-            self.human_render()
+            if self.time_model > self.time_next_human_draw:
+                self.time_next_human_draw = self.time_model + self.time_step_human_draw
+                self.human_render()
 
         if self.observation_render == True:
             return self._get_render(True), step_reward, terminated, truncated, info
@@ -384,29 +390,40 @@ class HumanMoveSimpleAction(gym.Env):
  
             # скорость вперед - назад
             # по разности текущей и заданной скорости выбираем тормозить или разгоняться
-            speed_sign = 1.
+            speed_forward_sign = 1.
             if self._equivalent(set_speed_forward, new_speed.x) == True:
-                speed_sign = 0
+                speed_forward_sign = 0
             elif set_speed_forward < new_speed.x:
-                speed_sign = -1.
-            # меняем скорость
-            new_speed.x += speed_sign * self.speed_acc * self.time_step
-            new_speed.x = self._clamp(new_speed.x, -self.speed_k, self.speed_k)
+                speed_forward_sign = -1.
+
 
             # скорость вправо - влево
             # по разности текущей и заданной скорости выбираем тормозить или разгоняться
-            speed_sign = 1.
+            speed_right_sign = 1.
             if self._equivalent(set_speed_right, new_speed.y) == True:
-                speed_sign = 0
+                speed_right_sign = 0
             elif set_speed_right < new_speed.y:
-                speed_sign = -1.
+                speed_right_sign = -1.
+
+            
             # меняем скорость
-            new_speed.y += speed_sign * self.speed_acc * self.time_step
+            new_speed.x += speed_forward_sign * self.speed_acc * self.time_step
+            new_speed.x = self._clamp(new_speed.x, -self.speed_k, self.speed_k)
+            new_speed.y += speed_right_sign * self.speed_acc * self.time_step
             new_speed.y = self._clamp(new_speed.y, -self.speed_k, self.speed_k)
 
             if new_speed.rho > self.speed_k:
                 new_speed /= new_speed.rho
                 new_speed *= self.speed_k
+
+            # проверяем препятсвия по пути
+            if self.vec_dist_to_obctacle_bind.rho < 2 * self.speed_k * self.time_tick:
+                cos_obst = new_speed @ self.vec_dist_to_obctacle_bind
+                if cos_obst > 0:
+                    right_obst = vector.obj(x=-self.vec_dist_to_obctacle_bind.y, y=self.vec_dist_to_obctacle_bind.x)
+                    right_speed = new_speed @ right_obst / right_obst.rho
+                    new_speed = right_speed * right_obst / right_obst.rho
+
 
             # переводим скорость в локальную системму координат 
             speed = new_speed.x * self.dir_view + new_speed.y * dir_view_right
@@ -452,7 +469,7 @@ class HumanMoveSimpleAction(gym.Env):
             delta_angle = self._clamp(delta_angle, -self.speed_angle_k, self.speed_angle_k)
             teach_set_angle_speed = delta_angle / self.speed_angle_k
 
-            t_action = np.array([teach_set_speed, teach_set_angle_speed, 0])
+            t_action = np.array([teach_set_speed, 0, teach_set_angle_speed])
 
         else:
 
@@ -471,11 +488,10 @@ class HumanMoveSimpleAction(gym.Env):
 
 
         return t_action
-    
 
 
     def calc_step_reward_box(self, set_angle_speed: float, set_speed_forward: float, set_speed_right: float):
-        
+
         if self.time_model_max < self.time_model:  # время вышло
             return -3, False, True
 
@@ -492,8 +508,7 @@ class HumanMoveSimpleAction(gym.Env):
 
             time_fine = self.time_model_optimum / self.time_model
             return time_fine, True, False
-            
-        angle_10 = math.pi / 18.  # 10 градусов
+           
 
         # единичный вектор на целевую точку        
         dir_to_target_point = vec_to_finish / vec_to_finish.rho
@@ -534,65 +549,14 @@ class HumanMoveSimpleAction(gym.Env):
 
 
         #!!!!!!!!!!!!!!!!!!!!!!!!!!----REWARD-----
-        ## Вознаграждение за ПОВОРОТ ( set_angle_speed )
-
-        # косинус угола на который надо довернуть
-        cos_delta_angle = self.dir_view @ dir_to_target_point
-
-        # стандартный штраф
-        self.angle_step_reward = 0.0005 * ( 2*(cos_delta_angle) ** 3 - 4*(cos_delta_angle) * set_angle_speed**2 - 1)
-                    
-
-        ## Вознаграждение за Скорость ( set_speed_forward  set_speed_right )
-
-        #!!!!!!!!!!!!!!!!!!!!!!!!!!----REWARD-----
         # Скорость сближения низкая
-        self.speed_step_reward = 0.001
-
-        if abs(way_step) < 0.1:
-            self.zero_speed_step += 1
-            if self.zero_speed_step > 10: # штраф за не изменение расстояния до целевой точки (чтоб не кружил вокруг)
-                self.speed_step_reward = -0.002
-                #return speed_step_reward, False, False
-
-        else:
-
-            self.zero_speed_step = 0
             
-            # удаляемся штраф увличивается пропорционально скорости, 
-            # приближаемся награда увеличивается пропорционально скрости
-            self.speed_step_reward *= way_step 
+        # удаляемся штраф увличивается пропорционально скорости, 
+        # приближаемся награда увеличивается пропорционально скрости
+        self.speed_step_reward = 0.001 * way_step 
 
-            # усиление награды при прямом сближении
-            if way_step > 0.1:
-                # косинус угла меду направлением движения и направление на целевую точку
-                cos_way = 1
-                if way_vec.rho > 0.0001:
-                    cos_way = way_step / way_vec.rho
-            
-                # угол смещения направления на целевую точку
-                angle_rate = angle_10
-                if vec_to_finish.rho < 50:
-                    angle_rate = angle_10 * 0.5   # 5 градусов
-                elif vec_to_finish.rho < 10:
-                    angle_rate = angle_10 * 0.2   # 2 градуса
-                # чем ближе тем точнее надо наводится
-                if cos_way > math.cos(angle_rate):
-                    self.speed_step_reward *= 2
-            else:
-                self.speed_step_reward *= 1.2
-
-        #!!!!!!!!!!!!!!!!!!!!!!!!!!----REWARD-----
-        ## Вознаграждение за рассогласование вектора скорости и вектора взгляда
-        self.view_step_reward = 0
-        # только для сближения и на большем удалении (около цели можно двигаться любым способом)
-        # уменяшает награду за сближение с целевой точкой если сближение происходит боком
-        if self.speed_bind_set.rho > 0.5 and vec_to_finish.rho > 5:
-            cos_view_to_speed = vector.obj(x=1,y=0) @ self.speed_bind_set / self.speed_bind_set.rho
-            self.view_step_reward = 0.001 * (cos_view_to_speed**3 - 0.7 * math.sqrt(abs(self.speed_bind_set.y)) )
-
-        step_reward = self.angle_step_reward + self.speed_step_reward + self.view_step_reward + self.stoper_step_reward
-        #print(f'REWARDS: Angle {angle_step_reward}, Speed {speed_step_reward}, View {view_step_reward}, Stoper {stoper_step_reward}')
+        step_reward = self.speed_step_reward + self.stoper_step_reward
+        #print(f'REWARDS: Speed {speed_step_reward}, Stoper {stoper_step_reward}')
         return step_reward, False, False
     
     def calc_step_reward_discrete(self, action):
@@ -792,30 +756,6 @@ class HumanMoveSimpleAction(gym.Env):
             srt = pos + 10 * dir_move
             end = srt + 5 * self.speed_local
             pygame.draw.aaline(self.screen, red, [srt.x,srt.y], [end.x,end.y])
-
-        pygame.display.update()
-
-        # устанавливаем частоту обновления экрана
-        pygame.time.Clock().tick(60)
-
-    def draw_render(self, figures:list[dict[Any]], render_type:str='rgb'):
-    
-        black = (0, 0, 0)
-        white = (255, 255, 255)
-        red = (255, 0, 0)
-        green = (0, 255, 0)
-        blue = (0, 0, 255)
-
-        self.screen.fill(black)
-
-        #for object in figures:
-        #    otype = object['type']
-        #    if otype == 'circle':
-        #        pygame.draw.circle(self.screen, blue, (target_circle.x, target_circle.y), self.finish_radius)
-        #    elif otype == 'polygon':
-        #        pygame.draw.polygon(self.screen, red, triangle_points)
-        #    elif otype == 'line':
-        #        pygame.draw.aaline(self.screen, red, [srt.x,srt.y], [end.x,end.y])
 
         pygame.display.update()
 

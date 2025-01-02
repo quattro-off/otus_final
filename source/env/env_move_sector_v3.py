@@ -4,22 +4,18 @@ import numpy as np
 import math
 import random
 import vector 
-import pygame
-from PIL import Image, ImageDraw
+import re
 from typing import Dict
 import sys
 import os
 
 sys.path.append(os.path.abspath('./'))
-sys.path.append(os.path.abspath('../common'))
+sys.path.append(os.path.abspath('../'))
 
-from env_simple_move import HumanMoveSimpleAction
-from sector_view import SectorView
+from env_move_simple_v3 import MoveSimpleActionV3
+from common.sector_view import SectorView
+import common.functions as f
 
-# dXt (-300,300), dXt (-300,300) 
-# Dt t (0, 300)
-# Azt t (-pi, pi)
-# dXt, dYt, Dt, Azt, 
 
 # setor info Agent Bind location
 # density (0, 100%)
@@ -65,7 +61,7 @@ action_space_d = Discrete(7, seed=42)
 
 observation_space_rend = Box(0, 255, (600, 600, 1), dtype=np.uint8)
 
-class HumanMoveSectorAction(HumanMoveSimpleAction):
+class HumanMoveSectorActionV3(MoveSimpleActionV3):
 
     #observation
     damage_radius_k = 10
@@ -85,21 +81,31 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                  continuous: bool = True,
                  seed: int=42, 
                  render_mode: str=None, 
+                 render_time_step: float=1.,
                  observation_render: bool = False, 
                  target_point_rand:bool = False,
                  object_ignore:bool = False,
+                 object_locate:str = 'random',
                  tree_count: int = 20,
                  options = None
                 ):
         super().__init__(continuous = continuous, 
                          seed = seed, 
                          render_mode = render_mode, 
+                         render_time_step = render_time_step,
                          observation_render = observation_render,
                          target_point_rand = target_point_rand,
                          options=options,
                          )
         
+        self.object_locate = object_locate
         self.trees_count = tree_count
+        
+        num = re.findall('(\d+)', self.object_locate)
+        if len(num) == 0:
+            self.border_count = 1
+        else:
+            self.border_count = int(f.f_clamp(int(num[-1]), 1, 20))
         
         if observation_render == True:
             self.observation_space = observation_space_rend
@@ -130,6 +136,8 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
         self.sectors[270] = SectorView(sector_phi=270, max_dist=150)
         self.sectors[300] = SectorView(sector_phi=300, max_dist=150)
         self.sectors[330] = SectorView(sector_phi=330, max_dist=150)
+
+        self.left_or_right = True
         
     def get_rewards(self)->Dict[str, float]:
         step_rews = super().get_rewards()
@@ -142,6 +150,8 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
 
         start_observation, info = super().reset(seed=seed)
 
+        position = self.dynamic.get_position()
+
         self.reward_object_use = 0
         self.reward_object_stop = 0
         self.reward_object_move = 0 
@@ -151,7 +161,7 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
 
         self.objects.clear()
 
-        start_data = {'id': 0, 'type': 'start', 'pos':self.position, 'radius': 6, 'vis': False, 'col': (0,0,0)}
+        start_data = {'id': 0, 'type': 'start', 'pos':position, 'radius': 6, 'vis': False, 'col': (0,0,0)}
         self.objects.append(start_data)
 
         # target point
@@ -160,31 +170,65 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
         self.objects.append(final_data)
 
         if self.object_ignore == False:
+            self.target_point.x = 250
+            self.target_point.y = 0
+            position.x = -250
+            position.y = 0
+            to_target = self.target_point - position
 
-            _min_pos_x = -250 #0.5 * (self.position.x + self.target_point.x) - 100
-            _max_pos_x = 250  #0.5 * (self.position.x + self.target_point.x) + 100
-            _min_pos_y = -250 #0.5 * (self.position.y + self.target_point.y) - 100
-            _max_pos_y = 250  #0.5 * (self.position.y + self.target_point.y) + 100
-
-            # trees
-            for i in range(self.trees_count):
-                id = i + 2
-
+            self.time_model_optimum = self.dynamic.get_min_time_moving(self.target_point)
+            self.time_model_max = 3 * self.time_model_optimum
             
-                d_n = vector.obj(x=0,y=0)
-                is_valide = False
-                while is_valide == False:
-                    d_n = vector.obj(x = random.randint(int(_min_pos_x), int(_max_pos_x)),
-                                    y = random.randint(int(_min_pos_y), int(_max_pos_y))
-                                    )
-                    d_pos = self.position - d_n
-                    d_tp = self.target_point - d_n
-                    if d_pos.rho > self.tree_radius + 1 and d_tp.rho > self.tree_radius + 1:
-                        is_valide = True
 
-                tree_data = {'id': id, 'type': 'tree', 'pos':d_n, 'radius': self.tree_radius, 'vis': False, 'col': (0,255,0)}
-                self._check_object_on_sector(tree_data)
-                self.objects.append(tree_data)
+
+            if 'wall' in self.object_locate or 'build' in self.object_locate:
+
+
+                right_target = vector.obj(x=-to_target.y,y=to_target.x)
+                right_target /= right_target.rho
+                start_create = position + 0.3*to_target
+                to_target /= to_target.rho
+
+                for b in range(self.border_count):
+                    sign = -1 if (b+1)%2 else 1
+                    start_create += to_target * self.tree_radius * 6 + sign * right_target * self.tree_radius * 4
+
+                    for i in range(self.trees_count):
+                        id = i + 2
+                        
+                        sign = -1 if (i+1)%2 else 1
+
+                        d_n = start_create + right_target * sign * (i * self.tree_radius * 4 )
+                        if d_n.x > -self.zero.x and d_n.x < self.zero.x and d_n.y > -self.zero.y and d_n.y < self.zero.y:
+                            tree_data = {'id': id, 'type': 'tree', 'pos':d_n, 'radius': self.tree_radius, 'vis': False, 'col': (0,255,0)}
+                            self._check_object_on_sector(tree_data)
+                            self.objects.append(tree_data)
+
+
+            else:
+                # trees
+                for i in range(self.trees_count):
+                    id = i + 2
+
+                    d_n = vector.obj(x=0,y=0)
+                    is_valide = False
+                    while is_valide == False:
+                        d_n = vector.obj(x = random.randint(int(self.zero.x), int(self.zero.x)),
+                                        y = random.randint(int(self.zero.y), int(self.zero.y))
+                                        )
+                        d_pos = position - d_n
+                        d_tp = self.target_point - d_n
+                        if d_pos.rho > self.tree_radius + 1 and d_tp.rho > self.tree_radius + 1:
+                            is_valide = True
+
+                    tree_data = {'id': id, 'type': 'tree', 'pos':d_n, 'radius': self.tree_radius, 'vis': False, 'col': (0,255,0)}
+                    self._check_object_on_sector(tree_data)
+                    self.objects.append(tree_data)
+
+            position.y = random.randint(-250,250)
+            self.target_point.y = random.randint(-250,250)
+
+            self.dynamic.set_position(position)
 
         i = 4
         for sector in self.sectors.values():
@@ -194,6 +238,8 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
             start_observation[i+2] = s_o[2]
             i = i + 3
 
+
+        self.left_or_right = bool(random.randint(0, 1))
 
         if self.observation_render == True:
             return self._get_render(True), info
@@ -218,35 +264,45 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
         bind_phi_left_side = 0
         bind_phi_right_side = 0
 
+        position = self.dynamic.get_position()
+
         if object['type'] == 'tree':
-            vec_dir = object['pos'] - self.position
+            vec_dir = object['pos'] - position
 
             if vec_dir.rho < self.dist_k:
 
                 d_angle_view = math.atan2(object['radius'], vec_dir.rho)
-                bind_phi_left_side = math.degrees(self._get_course_bind(vec_dir.phi - d_angle_view, True))
-                bind_phi_right_side = math.degrees(self._get_course_bind(vec_dir.phi + d_angle_view, True))
+                shift_dir = vector.obj(phi=vec_dir.phi - d_angle_view,rho=1)
+                bind_phi_left_side = math.degrees(self.dynamic.get_delta_angle_direction(shift_dir))
+                shift_dir = vector.obj(phi=vec_dir.phi + d_angle_view,rho=1)
+                bind_phi_right_side = math.degrees(self.dynamic.get_delta_angle_direction(shift_dir))
                 dist_left = vec_dir.rho - object['radius']
                 dist_right = vec_dir.rho - object['radius']
 
                 b_set_to_view = True
 
         elif object['type'] == 'wall':
-            vec_dir_1 = object['c1'] - self.position
-            vec_dir_2 = object['c2'] - self.position
 
+            obj_line =  object['c1'] - object['c2']
+            to_line_vec = vector.obj(x=-obj_line.y, y=obj_line.x)
+            to_line_vec.rho = 1
 
-            #if vec_dir_1.rho < self.dist_k or vec_dir_2.rho < self.dist_k:
-            angle = vec_dir_1.deltaphi(vec_dir_2)
-            if angle > 0:
-                vec_dir_1, vec_dir_2 = vec_dir_2, vec_dir_1
+            vec_dir_1 = object['c1'] - position
+            vec_dir_2 = object['c2'] - position
 
-            bind_phi_left_side = math.degrees(self._get_course_bind(vec_dir_1.phi, True))
-            bind_phi_right_side = math.degrees(self._get_course_bind(vec_dir_2.phi, True))
-            dist_left = vec_dir_1.rho
-            dist_right = vec_dir_2.rho
+            dist_to_line = to_line_vec @ vec_dir_1
+            if vec_dir_1.rho < self.dist_k or vec_dir_2.rho < self.dist_k or dist_to_line < self.dist_k:
 
-            b_set_to_view = True
+                angle = vec_dir_1.deltaphi(vec_dir_2)
+                if angle > 0:
+                    vec_dir_1, vec_dir_2 = vec_dir_2, vec_dir_1
+
+                bind_phi_left_side = math.degrees(self.dynamic.get_delta_angle_direction(vec_dir_1))
+                bind_phi_right_side = math.degrees(self.dynamic.get_delta_angle_direction(vec_dir_2))
+                dist_left = vec_dir_1.rho
+                dist_right = vec_dir_2.rho
+
+                b_set_to_view = True
 
         if b_set_to_view:
             for sector in self.sectors.values():
@@ -293,7 +349,7 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                         obs_name = 'Density' if obst_n == 0 else ('Dist' if obst_n == 1 else 'Type')
                         #print(f'abs n:{i}, by {obs_name}, out of NORM : {obs}')
             
-                obs = self._clamp(obs,0.,1.)
+                obs = f.f_clamp(obs,0.,1.)
                 i += 1
 
             return observation, step_reward, terminated, truncated, info
@@ -314,6 +370,10 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
 
         if self.object_ignore == False:
 
+            # убираем препятсвие
+            self.vec_dist_to_obctacle_bind.x = 100
+            self.vec_dist_to_obctacle_bind.y = 100
+
             direct_along_sector = 0             # сектор на целевую точку
             move_along_sector = 0               # сектор движения
             density_move_along_sector = 0       # плотность препятствий в секторе движения
@@ -325,14 +385,14 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
             count_sector_with_70_density = 0.   # количество секторов с большой плотностью
             keys = []
 
-            set_move_local = vector.obj(x=set_speed_forward, y=set_speed_right)
-            #set_move_local = vector.obj(x=self.speed_bind.x, y=self.speed_bind.y)
+            #set_move_local = vector.obj(x=set_speed_forward, y=set_speed_right)
+            set_move_local = vector.obj(x=self.speed_bind.x, y=self.speed_bind.y)
 
             # вектор на целевую точку в связанной ССК
             direct_to_point = self.target_point - self.position
             view_phi_bind = direct_to_point.deltaphi(self.dir_view)
             dir_view_bind = vector.obj(phi=view_phi_bind,rho=1)
-
+            move_d_phi_bind = direct_to_point.deltaphi(self.speed_local)
 
             for key, sector in self.sectors.items():
 
@@ -375,6 +435,10 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                 # данные о препятствии в сенкторе
                 is_find, obj_id, vec_dist_bind = sector.get_near_obstacle()
 
+                # препятсвие для для расчета столкновения
+                self.vec_dist_to_obctacle_bind.x = vec_dist_bind.x
+                self.vec_dist_to_obctacle_bind.y = vec_dist_bind.y
+
                 # в секторе движения штаф зависит отплотности препятствий и расстоянии до препятствий
                 if is_find == False:
                     print(f'WARNING!!! In sector({key}) with density({density}) is not trees')
@@ -408,20 +472,16 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                         self.reward_object_stop *= 1.4
                         if dist < 1: 
                             self.reward_object_stop *= 1.4
-                            set_speed_forward = 0.
 
                             if dist < 0.5:
                                 self.reward_object_stop *= 1.4
-                                self.speed_local.x = 0
-                                self.speed_local.y = 0
-                                self.speed_bind.x = 0
-                                self.speed_bind.y = 0
+
 
                             object['col'] = (255,0,255)
                         else:
                             object['col'] = (255,255,0)
 
-            if False:#self.reward_object_use > 0:
+            if True:#self.reward_object_use > 0:
                 # добавить вознагражения если происходит обход препятсвий
                 s_len = len(self.sectors)
                 s_half = int(0.5*s_len)
@@ -430,19 +490,32 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                 num = int(direct_along_sector/d_s)
                 keys_left_right = []  #сортировка секторов начиная от сектора на целевуюточку по одному вправо и влево
                 keys_left_right.append(keys[num])
+
                 for i in range(1,s_half+1):
+                    
+
                     n_s_next = num + i
                     if n_s_next >= s_len:
                         n_s_next = s_len - n_s_next
-                    keys_left_right.append(keys[n_s_next])
-                    if len(keys) == len(keys_left_right):
-                        break
                     n_s_prev = num - i
                     if n_s_prev < 0:
                         n_s_prev = s_len + n_s_prev
-                    keys_left_right.append(keys[n_s_prev])
-                    if len(keys) == len(keys_left_right):
-                        break
+
+                    if self.left_or_right:
+                        keys_left_right.append(keys[n_s_prev])
+                        if len(keys) == len(keys_left_right):
+                            break
+                        keys_left_right.append(keys[n_s_next])
+                        if len(keys) == len(keys_left_right):
+                            break
+                    else:
+                        keys_left_right.append(keys[n_s_next])
+                        if len(keys) == len(keys_left_right):
+                            break
+
+                        keys_left_right.append(keys[n_s_prev])
+                        if len(keys) == len(keys_left_right):
+                            break
 
                 if len(keys) != len(keys_left_right):
                     print(f'WARNING!!! error sort sectors key')
@@ -455,269 +528,102 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                     if move_along_sector == k_s:
                         sector = self.sectors[k_s]
                         density = sector.get_density()
-                        self.reward_object_move = 0.0005 * (s_len - num_move + 1) * (1- math.sqrt(density))
+                        k_dist = sector.get_distance()
+                        #self.reward_object_move = 0.00002 * (s_len - num_move + 1) * (0.5 - density)
+                        
+                        self.reward_object_move = 0.001 * ((1.1*math.pi - abs(move_d_phi_bind))/math.pi) * (0.2 - density) 
+                        self.reward_object_move += -0.0001*(1./(math.sqrt(k_dist)+0.1) - 1)
+
+                        #if self.reward_object_move < 0:
+                        #    self.reward_object_move *= 3
                         break
                     num_move += 1
 
                 #print(f'move sector: {move_along_sector}, rStop {self.reward_object_stop}, rMove {self.reward_object_move}')
 
             # целевая точка ближе препятствия - игнорируем препятствие
-            if direct_along_sector == move_along_sector:
-                max_d_sector = self.sectors[direct_along_sector]
-                is_find, obj_id, vec_dist_bind = max_d_sector.get_near_obstacle()
-                if is_find:
-                    if vec_dist_bind.rho > direct_to_point.rho:
-                        #print('INFO!!! target point is near')
-                        self.reward_object_use = 0
-                        self.reward_object_stop = 0
-                        self.reward_object_move = 0 
+            #if direct_along_sector == move_along_sector:
+            #    max_d_sector = self.sectors[direct_along_sector]
+            #    is_find, obj_id, vec_dist_bind = max_d_sector.get_near_obstacle()
+            #    if is_find:
+            #        if vec_dist_bind.rho > direct_to_point.rho:
+            #            #print('INFO!!! target point is near')
+            #            self.reward_object_use = 0
+            #            self.reward_object_stop = 0
+            #            self.reward_object_move = 0 
               
 
     def calc_step_reward_box(self, set_angle_speed, set_speed, set_speed_right):
 
         step_reward, terminated, truncated =  super().calc_step_reward_box(set_angle_speed, set_speed, set_speed_right)
 
-        #if self.time_model_max < self.time_model:  # время вышло
-        #    return -5, False, True
-
-        #ушел за границу зоны
-        #if self.position.x < -self.zero.x or self.position.y < -self.zero.y or self.position.x > self.zero.x or self.position.y > self.zero.y:
-        #    return -2, False, True
-
-        # вектор от текущей позиции до целевой точки (целевая точка всегла в центре)
-        #vec_to_finish = self.target_point - self.position
-        # пришли
-        #if vec_to_finish.rho < self.finish_radius:
-        #    return 5, True, False    
-
-        #step_reward = -0.001
-
-
-        if self.reward_object_use == 1:#append
-            self.view_step_reward = 0.
-            self.angle_step_reward = 0.
-            step_reward += self.reward_object_stop + self.reward_object_move
-        elif self.reward_object_use == 2:#rewrite
-            step_reward = self.reward_object_stop + self.reward_object_move + self.stoper_step_reward
-            self.angle_step_reward = 0.
-            self.speed_step_reward = 0.
-            self.view_step_reward = 0.
-
-        return step_reward, terminated, truncated
-        #return step_reward, False, False
+        return step_reward + self.reward_object_move, terminated, truncated
     
+
     def render(self):
-        #if self.is_render == False:
-        #    if render_mode == None or render_mode != 'rgb_array':
-        #        return None
-        return self._get_render(False)
-
-    def _get_render(self, to_observation: bool):
-        black = (0, 0, 0)
-        white = (255, 255, 255)
-        red = (255, 0, 0)
-        green = (0, 255, 0)
-        blue = (0, 0, 255)
-
-        # позиция агента
-        pos = self.zero + self.position
-        
-        im = Image.new('RGB', (self.zero.x * 2, self.zero.y * 2), black)
-        draw = ImageDraw.Draw(im)
-        
-        draw.rectangle((1, 1, self.zero.x * 2 - 1, self.zero.y * 2 - 1), outline=red, width=4)
-
-        target_circle = self.zero + self.target_point
-        draw.ellipse((
-                    target_circle.x-self.finish_radius, 
-                    target_circle.y-self.finish_radius,
-                    target_circle.x+self.finish_radius,  
-                    target_circle.y+self.finish_radius), 
-            fill=blue, outline=blue)
-        
-        if self.object_ignore == False:
-
-            # область видимости объектов  вокруг
-            draw.ellipse((
-                    pos.x-self.dist_k, 
-                    pos.y-self.dist_k,
-                    pos.x+self.dist_k,  
-                    pos.y+self.dist_k), 
-                    outline=white, width=2)
-
-            i = 0
-            for sector in self.sectors.values():
-                col = (0,20+20*i,200)
-                i += 1
-                is_find, obj_id, vec_to = sector.get_near_obstacle()
-                if is_find:
-                    vec_to = vec_to.rotateZ(self.dir_view.phi)
-                    v1 = self.zero + self.position
-                    v2 = self.zero + vec_to + self.position
-                    draw.line(xy=((v1.x,v1.y), (v2.x,v2.y)),fill=col, width=2)
-
-                end_sector_phi = sector.sector_phi + sector.delta_phi
-                lt0 = vector.obj(phi=self.dir_view.phi - math.radians(end_sector_phi), rho=0.8*self.dist_k)
-                lt1 = vector.obj(phi=self.dir_view.phi - math.radians(end_sector_phi), rho=self.dist_k)
-                srt = pos + lt0
-                end = pos + lt1
-                draw.line(xy=((srt.x,srt.y), (end.x,end.y)),fill=red)
-
-                r_d = sector.get_density()*10
-                if r_d > 0:
-                    density = vector.obj(phi=self.dir_view.phi + math.radians(sector.sector_phi), rho=sector.get_distance(True)+10)
-                    density += pos
-                    draw.ellipse((density.x-r_d, density.y-r_d,density.x+r_d, density.y+r_d), fill=white, outline=white) 
-
-
-            for object in self.objects:
-                if object['type'] == 'tree':
-                    col = object['col']
-                    dem = self.zero + object['pos']
-                    rad = object['radius']
-                    draw.ellipse((dem.x-rad, dem.y-rad,dem.x+rad, dem.y+rad), fill=col, outline=col)
-                elif object['type'] == 'wall':
-                    col = object['col']
-                    c1 = self.zero + object['c1']
-                    c2 = self.zero + object['c2']
-                    draw.line(xy=((c1.x,c1.y), (c2.x,c2.y)),fill=col, width=4)             
-
-        # когда среда это картинка то траеторию не рисуем
-        if to_observation == False:
-            for point in self.tick_point:
-                r_point = self.zero + point
-                draw.point((r_point.x, r_point.y), fill=green)
-
-        # рисуем треугольник
-        triangle = pos + 5 * self.dir_view
-        triangle_width = 10
-        triangle_height = 10
-        corner2 = vector.obj(x = -triangle_height, y = triangle_width/2)
-        corner3 = vector.obj(x = -triangle_height, y = -triangle_width/2)
-        corner2 = corner2.rotateZ(self.dir_view.phi)
-        corner3 = corner3.rotateZ(self.dir_view.phi)
-        corner2 += triangle
-        corner3 += triangle
-        base = pos - 2 * self.dir_view
-
-        draw.polygon(
-            xy=(
-                (triangle.x, triangle.y),
-                (corner2.x, corner2.y),
-                (base.x, base.y),
-                (corner3.x, corner3.y)
-            ), fill=red, outline=red
-        )
-
-        if self.speed_local.rho > 0:
-            dir_move = self.speed_local/self.speed_local.rho
-            srt = pos + 10 * dir_move
-            end = srt + 10 * self.speed_local
-            draw.line(xy=((srt.x,srt.y), (end.x,end.y)),fill=red)
-
-            set_speed = vector.obj(phi=self.dir_view.phi + self.speed_bind_set.phi,rho=self.speed_bind_set.rho)
-            dir_move = set_speed/set_speed.rho
-            srt = pos + 10 * dir_move
-            end = srt + 4 * set_speed
-            draw.line(xy=((srt.x,srt.y), (end.x,end.y)),fill=green)
-
-        im_np = np.asarray(im)
-        return im_np
-
-    def human_render(self):
-        
-        black = (0, 0, 0)
-        white = (255, 255, 255)
-        red = (255, 0, 0)
-        green = (0, 255, 0)
-        blue = (0, 0, 255)
-        pure =(255,0,255)
-
-        # позиция агента
-        pos = self.zero + self.position
-
-        self.screen.fill(black)
-
-        if self.object_ignore == False:
-
-            # область видимости объектов  вокруг
-            pygame.draw.circle(self.screen, white, (pos.x, pos.y), self.dist_k, 2)
-
-            i = 0
-            for sector in self.sectors.values():
-                col = (0,20+20*i,200)
-                i += 1
-                is_find, obj_id, vec_to = sector.get_near_obstacle()
-                if is_find:
-                    vec_to = vec_to.rotateZ(self.dir_view.phi)
-                    v1 = self.zero + self.position
-                    v2 = self.zero + vec_to + self.position
-                    pygame.draw.line(self.screen, col, [v1.x,v1.y], [v2.x,v2.y], 2)
-
-                end_sector_phi = sector.sector_phi + sector.delta_phi
-                lt0 = vector.obj(phi=self.dir_view.phi + math.radians(end_sector_phi), rho=0.8*self.dist_k)
-                lt1 = vector.obj(phi=self.dir_view.phi + math.radians(end_sector_phi), rho=self.dist_k)
-                srt = pos + lt0
-                end = pos + lt1
-                pygame.draw.aaline(self.screen, red, [srt.x,srt.y], [end.x,end.y])
-
-                density = vector.obj(phi=self.dir_view.phi + math.radians(sector.sector_phi), rho=sector.get_distance(True) + 10)
-                density += pos
-                pygame.draw.circle(self.screen, white, (density.x, density.y), sector.get_density()*10)
-
-            for object in self.objects:
-                if object['type'] == 'tree':
-                    col = object['col']
-                    dem = self.zero + object['pos']
-                    rad = object['radius']
-                    pygame.draw.circle(self.screen, col, (dem.x, dem.y), rad)
-                elif object['type'] == 'wall':
-                    col = object['col']
-                    c1 = self.zero + object['c1']
-                    c2 = self.zero + object['c2']
-                    pygame.draw.line(self.screen, col, [c1.x,c1.y], [c2.x,c2.y],4)
-
-        target_circle = self.zero + self.target_point
-        pygame.draw.circle(self.screen, blue, (target_circle.x, target_circle.y), self.finish_radius)
+        figures = self._get_figures(False)
+        return self._get_render(figures,False)
     
-        for point in self.tick_point:
-            r_point = self.zero + point
-            pygame.draw.circle(self.screen, green, (r_point.x, r_point.y), 2)
-
-        # рисуем треугольник
-
-        triangle = pos + 5 * self.dir_view
-        triangle_width = 10
-        triangle_height = 10
-        corner2 = vector.obj(x = -triangle_height, y = triangle_width/2)
-        corner3 = vector.obj(x = -triangle_height, y = -triangle_width/2)
-        corner2 = corner2.rotateZ(self.dir_view.phi)
-        corner3 = corner3.rotateZ(self.dir_view.phi)
-        corner2 += triangle
-        corner3 += triangle
-        base = pos - 2 * self.dir_view
-
-        triangle_points = [(triangle.x, triangle.y), 
-                           (corner2.x, corner2.y), 
-                           (base.x, base.y),
-                           (corner3.x, corner3.y)]
-        pygame.draw.polygon(self.screen, red, triangle_points)
-
-        if self.speed_local.rho > 0:
-            dir_move = self.speed_local/self.speed_local.rho
-            srt = pos + 10 * dir_move
-            end = srt + 4 * self.speed_local
-            pygame.draw.aaline(self.screen, red, [srt.x,srt.y], [end.x,end.y])
-
-            set_speed = vector.obj(phi=self.dir_view.phi + self.speed_bind_set.phi,rho=self.speed_bind_set.rho)
-            dir_move = set_speed/set_speed.rho
-            srt = pos + 10 * dir_move
-            end = srt + 4 * set_speed
-            pygame.draw.aaline(self.screen, green, [srt.x,srt.y], [end.x,end.y])
+    def human_render(self, figures:list=None):
+        figures = self._get_figures(False)
+        return super().human_render(figures)
+        
 
 
-        pygame.display.update()
+    def _get_figures(self,to_observation:bool):
 
-        # устанавливаем частоту обновления экрана
-        pygame.time.Clock().tick(60)
+        black = (0, 0, 0)
+        white = (255, 255, 255)
+        red= (255,0,0)
 
+        position = self.dynamic.get_position()
+        dir_view = self.dynamic.get_direction()
+
+        # позиция агента
+        pos = self.zero + position
+        
+        figures1 = super()._get_figures(to_observation)
+
+        figures = []
+        if self.object_ignore == False:
+
+            # область видимости объектов  вокруг
+            figures.append({'figure':'ellipse', 'senter': (pos.x,pos.y), 'radius':self.dist_k, 'in_color':black, 'out_color':white, 'width':1})
+
+            i = 0
+            for sector in self.sectors.values():
+                col = (0,20+20*i,200)
+                i += 1
+                is_find, obj_id, vec_to = sector.get_near_obstacle()
+                if is_find:
+                    vec_to = vec_to.rotateZ(dir_view.phi)
+                    v1 = pos
+                    v2 = pos + vec_to
+                    figures.append({'figure':'line', 'start': (v1.x,v1.y), 'end':(v2.x,v2.y), 'in_color':col, 'width':2})
+
+                end_sector_phi = sector.sector_phi + sector.delta_phi
+                lt0 = vector.obj(phi=dir_view.phi + math.radians(end_sector_phi), rho=0.8*self.dist_k)
+                lt1 = vector.obj(phi=dir_view.phi + math.radians(end_sector_phi), rho=self.dist_k)
+                srt = pos + lt0
+                end = pos + lt1
+                figures.append({'figure':'line', 'start': (srt.x,srt.y), 'end':(end.x,end.y), 'in_color':red, 'width':1})
+
+                density = vector.obj(phi=dir_view.phi + math.radians(sector.sector_phi), rho=sector.get_distance(True) + 10)
+                density += pos
+                rad = sector.get_density()*10
+                figures.append({'figure':'ellipse', 'senter': (density.x,density.y), 'radius':rad, 'in_color':white, 'out_color':white, 'width':0})
+
+            for object in self.objects:
+                if object['type'] == 'tree':
+                    col = object['col']
+                    dem = self.zero + object['pos']
+                    rad = object['radius']
+                    figures.append({'figure':'ellipse', 'senter': (dem.x,dem.y), 'radius':rad, 'in_color': col, 'out_color':col, 'width':0})
+                elif object['type'] == 'wall':
+                    col = object['col']
+                    c1 = self.zero + object['c1']
+                    c2 = self.zero + object['c2']
+                    figures.append({'figure':'line', 'start': (c1.x,c1.y), 'end':(c2.x,c2.y), 'in_color':col, 'width':4})
+
+
+        return figures + figures1

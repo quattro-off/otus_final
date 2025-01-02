@@ -13,13 +13,9 @@ import os
 sys.path.append(os.path.abspath('./'))
 sys.path.append(os.path.abspath('../common'))
 
-from env_simple_move import HumanMoveSimpleAction
+from env_move_simple_v2 import MoveSimpleActionV2
 from sector_view import SectorView
 
-# dXt (-300,300), dXt (-300,300) 
-# Dt t (0, 300)
-# Azt t (-pi, pi)
-# dXt, dYt, Dt, Azt, 
 
 # setor info Agent Bind location
 # density (0, 100%)
@@ -65,7 +61,7 @@ action_space_d = Discrete(7, seed=42)
 
 observation_space_rend = Box(0, 255, (600, 600, 1), dtype=np.uint8)
 
-class HumanMoveSectorAction(HumanMoveSimpleAction):
+class HumanMoveSectorActionV2(MoveSimpleActionV2):
 
     #observation
     damage_radius_k = 10
@@ -85,6 +81,7 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                  continuous: bool = True,
                  seed: int=42, 
                  render_mode: str=None, 
+                 render_time_step: float=1.,
                  observation_render: bool = False, 
                  target_point_rand:bool = False,
                  object_ignore:bool = False,
@@ -94,6 +91,7 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
         super().__init__(continuous = continuous, 
                          seed = seed, 
                          render_mode = render_mode, 
+                         render_time_step = render_time_step,
                          observation_render = observation_render,
                          target_point_rand = target_point_rand,
                          options=options,
@@ -130,6 +128,8 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
         self.sectors[270] = SectorView(sector_phi=270, max_dist=150)
         self.sectors[300] = SectorView(sector_phi=300, max_dist=150)
         self.sectors[330] = SectorView(sector_phi=330, max_dist=150)
+
+        self.left_or_right = True
         
     def get_rewards(self)->Dict[str, float]:
         step_rews = super().get_rewards()
@@ -194,6 +194,8 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
             start_observation[i+2] = s_o[2]
             i = i + 3
 
+
+        self.left_or_right = bool(random.randint(0, 1))
 
         if self.observation_render == True:
             return self._get_render(True), info
@@ -314,6 +316,10 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
 
         if self.object_ignore == False:
 
+            # убираем препятсвие
+            self.vec_dist_to_obctacle_bind.x = 100
+            self.vec_dist_to_obctacle_bind.y = 100
+
             direct_along_sector = 0             # сектор на целевую точку
             move_along_sector = 0               # сектор движения
             density_move_along_sector = 0       # плотность препятствий в секторе движения
@@ -325,14 +331,14 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
             count_sector_with_70_density = 0.   # количество секторов с большой плотностью
             keys = []
 
-            set_move_local = vector.obj(x=set_speed_forward, y=set_speed_right)
-            #set_move_local = vector.obj(x=self.speed_bind.x, y=self.speed_bind.y)
+            #set_move_local = vector.obj(x=set_speed_forward, y=set_speed_right)
+            set_move_local = vector.obj(x=self.speed_bind.x, y=self.speed_bind.y)
 
             # вектор на целевую точку в связанной ССК
             direct_to_point = self.target_point - self.position
             view_phi_bind = direct_to_point.deltaphi(self.dir_view)
             dir_view_bind = vector.obj(phi=view_phi_bind,rho=1)
-
+            move_d_phi_bind = direct_to_point.deltaphi(self.speed_local)
 
             for key, sector in self.sectors.items():
 
@@ -375,6 +381,10 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                 # данные о препятствии в сенкторе
                 is_find, obj_id, vec_dist_bind = sector.get_near_obstacle()
 
+                # препятсвие для для расчета столкновения
+                self.vec_dist_to_obctacle_bind.x = vec_dist_bind.x
+                self.vec_dist_to_obctacle_bind.y = vec_dist_bind.y
+
                 # в секторе движения штаф зависит отплотности препятствий и расстоянии до препятствий
                 if is_find == False:
                     print(f'WARNING!!! In sector({key}) with density({density}) is not trees')
@@ -408,20 +418,16 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                         self.reward_object_stop *= 1.4
                         if dist < 1: 
                             self.reward_object_stop *= 1.4
-                            set_speed_forward = 0.
 
                             if dist < 0.5:
                                 self.reward_object_stop *= 1.4
-                                self.speed_local.x = 0
-                                self.speed_local.y = 0
-                                self.speed_bind.x = 0
-                                self.speed_bind.y = 0
+
 
                             object['col'] = (255,0,255)
                         else:
                             object['col'] = (255,255,0)
 
-            if False:#self.reward_object_use > 0:
+            if True:#self.reward_object_use > 0:
                 # добавить вознагражения если происходит обход препятсвий
                 s_len = len(self.sectors)
                 s_half = int(0.5*s_len)
@@ -430,19 +436,32 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                 num = int(direct_along_sector/d_s)
                 keys_left_right = []  #сортировка секторов начиная от сектора на целевуюточку по одному вправо и влево
                 keys_left_right.append(keys[num])
+
                 for i in range(1,s_half+1):
+                    
+
                     n_s_next = num + i
                     if n_s_next >= s_len:
                         n_s_next = s_len - n_s_next
-                    keys_left_right.append(keys[n_s_next])
-                    if len(keys) == len(keys_left_right):
-                        break
                     n_s_prev = num - i
                     if n_s_prev < 0:
                         n_s_prev = s_len + n_s_prev
-                    keys_left_right.append(keys[n_s_prev])
-                    if len(keys) == len(keys_left_right):
-                        break
+
+                    if self.left_or_right:
+                        keys_left_right.append(keys[n_s_prev])
+                        if len(keys) == len(keys_left_right):
+                            break
+                        keys_left_right.append(keys[n_s_next])
+                        if len(keys) == len(keys_left_right):
+                            break
+                    else:
+                        keys_left_right.append(keys[n_s_next])
+                        if len(keys) == len(keys_left_right):
+                            break
+
+                        keys_left_right.append(keys[n_s_prev])
+                        if len(keys) == len(keys_left_right):
+                            break
 
                 if len(keys) != len(keys_left_right):
                     print(f'WARNING!!! error sort sectors key')
@@ -455,22 +474,25 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
                     if move_along_sector == k_s:
                         sector = self.sectors[k_s]
                         density = sector.get_density()
-                        self.reward_object_move = 0.0005 * (s_len - num_move + 1) * (1- math.sqrt(density))
+                        #k_dist = sector.get_distance()
+                        #self.reward_object_move = 0.00002 * (s_len - num_move + 1) * (0.5 - density)
+                        
+                        self.reward_object_move = 0.001 * ((math.pi - abs(move_d_phi_bind))/math.pi) * (0.1 - density) 
                         break
                     num_move += 1
 
                 #print(f'move sector: {move_along_sector}, rStop {self.reward_object_stop}, rMove {self.reward_object_move}')
 
             # целевая точка ближе препятствия - игнорируем препятствие
-            if direct_along_sector == move_along_sector:
-                max_d_sector = self.sectors[direct_along_sector]
-                is_find, obj_id, vec_dist_bind = max_d_sector.get_near_obstacle()
-                if is_find:
-                    if vec_dist_bind.rho > direct_to_point.rho:
-                        #print('INFO!!! target point is near')
-                        self.reward_object_use = 0
-                        self.reward_object_stop = 0
-                        self.reward_object_move = 0 
+            #if direct_along_sector == move_along_sector:
+            #    max_d_sector = self.sectors[direct_along_sector]
+            #    is_find, obj_id, vec_dist_bind = max_d_sector.get_near_obstacle()
+            #    if is_find:
+            #        if vec_dist_bind.rho > direct_to_point.rho:
+            #            #print('INFO!!! target point is near')
+            #            self.reward_object_use = 0
+            #            self.reward_object_stop = 0
+            #            self.reward_object_move = 0 
               
 
     def calc_step_reward_box(self, set_angle_speed, set_speed, set_speed_right):
@@ -493,18 +515,20 @@ class HumanMoveSectorAction(HumanMoveSimpleAction):
         #step_reward = -0.001
 
 
-        if self.reward_object_use == 1:#append
-            self.view_step_reward = 0.
-            self.angle_step_reward = 0.
-            step_reward += self.reward_object_stop + self.reward_object_move
-        elif self.reward_object_use == 2:#rewrite
-            step_reward = self.reward_object_stop + self.reward_object_move + self.stoper_step_reward
-            self.angle_step_reward = 0.
-            self.speed_step_reward = 0.
-            self.view_step_reward = 0.
+        #if self.reward_object_use == 1:#append
+        #    self.view_step_reward = 0.
+        #    self.angle_step_reward = 0.
+        #    step_reward += self.reward_object_stop + self.reward_object_move
+        #elif self.reward_object_use == 2:#rewrite
+        #    step_reward = self.reward_object_stop + self.reward_object_move + self.stoper_step_reward
+        #    self.angle_step_reward = 0.
+        #    self.speed_step_reward = 0.
+        #    self.view_step_reward = 0.
 
-        return step_reward, terminated, truncated
-        #return step_reward, False, False
+        if self.object_ignore:
+            return step_reward, terminated, truncated
+        else:
+            return self.speed_step_reward + self.reward_object_move, terminated, truncated
     
     def render(self):
         #if self.is_render == False:

@@ -29,6 +29,9 @@ class SectorView():
     def get_density(self):
         return self.observation[0]
     
+    def get_distance(self, absolute:bool=False):
+        return self.max_dist * self.observation[1] if absolute else self.observation[1]
+
     def size(self):
         return len(self.obstacles)
 
@@ -158,21 +161,34 @@ class SectorView():
             if min_dist_vec_to_obst.rho < self.max_dist or is_mem == True:
                 self.obstacles[id] = {'type': type, 'bind_phi_left': left, 'bind_phi_right': right, 'vec_dist': min_dist_vec_to_obst}
 
+                def min_dist(data):
+                    return data[1]['vec_dist'].rho
+
+                vs = sorted(self.obstacles.items(), key=min_dist)
+                self.obstacles = dict(vs)
+
                 if id not in self.mem_obst_id:
                     self.mem_obst_id.append(id)
 
                 obst_type = ''
                 dist = 1000
+                is_first = False
                 line = np.zeros(int(2 * self.delta_phi), dtype=np.int8)
                 for k, obst in self.obstacles.items():
                     n_start = int(obst['bind_phi_left'])
                     n_end = int(obst['bind_phi_right'])
-                    for n in range(n_start, n_end):
-                        line[n] = 1
 
-                    if dist > obst['vec_dist'].rho:
+                    if is_first == False:#ближайшее препятствие
+                        for n in range(n_start, n_end):
+                            line[n] = 1
+                        is_first = True
                         dist = obst['vec_dist'].rho
                         obst_type = obst['type']
+                    else:#следующие препятствия  - должны находиться недалеко от ближайшего
+                        if obst['vec_dist'].rho < dist + 3:
+                            for n in range(n_start, n_end):
+                                line[n] = 1
+                        
                 
                 density = 0
                 for p in line:
@@ -185,6 +201,8 @@ class SectorView():
                     self.observation[2] = 0.1
                 else:
                     self.observation[2] = 0.2
+            else:
+                b_cross_sector = False 
 
         return b_cross_sector
 

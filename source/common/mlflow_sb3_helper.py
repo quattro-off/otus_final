@@ -4,6 +4,7 @@ from typing import Any, Dict, Tuple, Union
 import mlflow
 import numpy as np
 import gymnasium
+from PIL import Image
 
 from stable_baselines3.common.logger import KVWriter, Logger
 from stable_baselines3.common.callbacks import BaseCallback
@@ -153,9 +154,12 @@ def VideoRecord(model, eval_env: gymnasium.Env, path: str, file_name: str, n_epi
     )
     
     if len(screens) > 1:
-        video_path = path + '/' + file_name
+        video_path = path + '/' + file_name + '.mp4'
         clip = ImageSequenceClip(screens[:-1], fps=fps)
         clip.write_videofile(video_path)
+        im_path = path + '/' + file_name + '.jpg'
+        im = Image.fromarray(screens[-2])
+        im.save(im_path)
         return True
 
     return False
@@ -188,7 +192,10 @@ class MLflowServerHelper():
                       experiment_id: int, 
                       experiment_name: str = "", 
                       checkpoint_interval: int = 0, 
-                      log_interval: int = 10):
+                      log_interval: int = 10,
+                      video_episods:int = 3,
+                      video_fps:int = 30
+                      ):
 
         experiment = {}
         if experiment_name == "":
@@ -235,9 +242,10 @@ class MLflowServerHelper():
                 is_delete_files = False
 
             #Video
-            if VideoRecord(model, env, experiment.name, '/agent.mp4', 3, 120) == True:
+            if VideoRecord(model, env, experiment.name, '/agent', video_episods, video_fps) == True:
                 try:
                     mlflow.log_artifact(experiment.name  + '/agent.mp4', experiment.name  + '/video')
+                    mlflow.log_artifact(experiment.name  + '/agent.jpg', experiment.name  + '/video')
                 except mlflow.MlflowException as e:
                     print(f'MLflow log_artifact VIDEO with message:  {e.message}')
 
